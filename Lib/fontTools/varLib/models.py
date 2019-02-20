@@ -180,13 +180,8 @@ class VariationModel(object):
 	 {0: 1.0},
 	 {0: 1.0},
 	 {0: 1.0, 4: 1.0, 5: 1.0},
-	 {0: 1.0, 3: 0.75, 4: 0.25, 5: 1.0, 6: 0.6666666666666666},
-	 {0: 1.0,
-	  3: 0.75,
-	  4: 0.25,
-	  5: 0.6666666666666667,
-	  6: 0.4444444444444445,
-	  7: 0.6666666666666667}]
+	 {0: 1.0, 3: 0.75, 4: 0.25, 5: 1.0},
+	 {0: 1.0, 3: 0.75, 4: 0.25, 5: 0.6666666666666667}]
 	"""
 
 	def __init__(self, locations, axisOrder=[]):
@@ -298,8 +293,17 @@ class VariationModel(object):
 
 			locAxes = set(loc.keys())
 			# Walk over previous masters now
-			for j,m in enumerate(locations[:i]):
-				# Master with extra axes do not participte
+			for j,m in enumerate(locations[:i+2]):
+				if i == j:
+					continue
+				# The initial lower and upper values for the range of
+				# an intermediate master is set to 0 and 1 respectively.
+				# When one intermediate master follows another on an axis,
+				# the 'upper' value of the first needs to be set to the
+				# peak value of the second, and the low value of the second
+				# needs to be set to the peak value of the first. In order
+				# for this logic to do this, we need to iterate through i+2.
+				# Masters with extra axes do not participate
 				if not set(m.keys()).issubset(locAxes):
 					continue
 				# If it's NOT in the current box, it does not participate
