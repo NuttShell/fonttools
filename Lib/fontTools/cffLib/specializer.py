@@ -108,7 +108,11 @@ def commandsToProgram(commands, get_delta_func=None, round_func=None):
 	varLib.models.getDeltas or varLib.varStore.VarDataItem.getDeltas"""
 	program = []
 	for op,args in commands:
-		if get_delta_func is None:
+		if op == 'hintmask':  # hintmasks cannot be blended.
+			program.append(op)  # hintmask op precedes its argument.
+			op = None  # prevent it from being added again below.
+			program.extend(args)
+		elif get_delta_func is None:
 			# assume that there are no blend argument lists.
 			program.extend(args)
 		else:

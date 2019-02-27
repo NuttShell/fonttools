@@ -331,7 +331,6 @@ def merge_charstrings(glyphOrder, num_masters, top_dicts, masterModel):
 		if len([gs for gs in all_cs if gs is not None]) == 1:
 			continue
 		model, model_cs = masterModel.getSubModel(all_cs)
-
 		# create the first pass CFF2 charstring, from
 		# the default charstring.
 		default_charstring = model_cs[0]
@@ -339,14 +338,16 @@ def merge_charstrings(glyphOrder, num_masters, top_dicts, masterModel):
 		# We need to override outlineExtractor because these
 		# charstrings do have widths in the 'program'; we need to drop these
 		# values rather than post assertion error for them.
-		default_charstring.outlineExtractor = CFFToCFF2OutlineExtractor
+		default_charstring.outlineExtractor = MergeOutlineExtractor
 		default_charstring.draw(var_pen)
 
 		# Add the coordinates from all the other regions to the
 		# blend lists in the CFF2 charstring.
 		region_cs = model_cs[1:]
 		for region_idx, region_charstring in enumerate(region_cs, start=1):
+			print("region_idx", region_idx, "loc", model.locations[region_idx])
 			var_pen.restart(region_idx)
+			region_charstring.outlineExtractor = MergeOutlineExtractor
 			region_charstring.draw(var_pen)
 
 		# Collapse each coordinate list to a blend operator and its args.
@@ -428,6 +429,54 @@ class CFFToCFF2OutlineExtractor(T2OutlineExtractor):
 		return args
 
 
+class MergeOutlineExtractor(CFFToCFF2OutlineExtractor):
+	""" Used to extract the charstring commands - including hints - from a
+	CFF charstring in order to merge it as another set of region data
+	into a CFF2 variable font charstring."""
+
+	def __init__(self, pen, localSubrs, globalSubrs,
+			nominalWidthX, defaultWidthX, private=None):
+		super(CFFToCFF2OutlineExtractor, self).__init__(pen, localSubrs,
+			globalSubrs, nominalWidthX, defaultWidthX, private)
+
+	def countHints(self):
+		args = self.popallWidth()
+		self.hintCount = self.hintCount + len(args) // 2
+		return args
+
+	def _hint_op(self, type, args):
+		self.pen.add_hint(type, args)
+
+	def op_hstem(self, index):
+		args = self.countHints()
+		self._hint_op('hstem', args)
+
+	def op_vstem(self, index):
+		args = self.countHints()
+		self._hint_op('vstem', args)
+
+	def op_hstemhm(self, index):
+		args = self.countHints()
+		self._hint_op('hstemhm', args)
+
+	def op_vstemhm(self, index):
+		args = self.countHints()
+		self._hint_op('vstemhm', args)
+
+	def op_hintmask(self, index):
+		if not self.hintMaskBytes:
+			args = self.countHints()
+			if args:
+				self._hint_op('vstemhm', args)
+			self.hintMaskBytes = (self.hintCount + 7) // 8
+		hintMaskBytes, index = self.callingStack[-1].getBytes(index,
+			self.hintMaskBytes)
+		self.pen.add_hint('hintmask', [hintMaskBytes])
+		return hintMaskBytes, index
+
+	op_cntrmask = op_hintmask
+
+
 class CFF2CharStringMergePen(T2CharStringPen):
 	"""Pen to merge Type 2 CharStrings.
 	"""
@@ -460,6 +509,17 @@ class CFF2CharStringMergePen(T2CharStringPen):
 									self.pt_index, len(cmd[1]),
 									cmd[0], self.glyphName)
 			cmd[1].append(pt_coords)
+		self.pt_index += 1
+
+	def add_hint(self, hint_type, abs_args):
+		if self.m_index == 0:
+			self._commands.append([hint_type, [abs_args]])
+		else:
+			cmd = self._commands[self.pt_index]
+			if cmd[0] != hint_type:
+				raise MergeTypeError(hint_type, self.pt_index, len(cmd[1]),
+					cmd[0], self.glyphName)
+			cmd[1].append(abs_args)
 		self.pt_index += 1
 
 	def _p(self, pt):
@@ -519,28 +579,42 @@ class CFF2CharStringMergePen(T2CharStringPen):
 			m_args = zip(*args)
 			# m_args[n] is now all num_master args for the i'th argument
 			# for this operation.
-			cmd[1] = m_args
+			cmd[1] = list(m_args)
 
 		# Now convert from absolute to relative
 		x0 = [0]*self.num_masters
 		y0 = [0]*self.num_masters
-		for cmd in self._commands:
-			is_x = True
-			coords = cmd[1]
-			rel_coords = []
-			for coord in coords:
-				prev_coord = x0 if is_x else y0
-				rel_coord = [pt[0] - pt[1] for pt in zip(coord, prev_coord)]
-
-				if allEqual(rel_coord):
-					rel_coord = rel_coord[0]
-				rel_coords.append(rel_coord)
-				if is_x:
-					x0 = coord
-				else:
-					y0 = coord
-				is_x = not is_x
-			cmd[1] = rel_coords
+		for cmd in commands:
+			op = cmd[0]
+			if op == 'hintmask':
+				coord = list(cmd[1])
+				assert allEqual(coord), (
+					"hintmask values cannot differ between source fonts.")
+				cmd[1] = [coord[0][0]]
+			elif 'stem' in op:
+				rel_coords = []
+				for coord in cmd[1]:
+					if allEqual(coord):
+						rel_coords.append(coord[0])
+					else:
+						rel_coords.append(list(coord))
+				cmd[1] = rel_coords
+			else:
+				is_x = True
+				coords = cmd[1]
+				rel_coords = []
+				for coord in coords:
+					prev_coord = x0 if is_x else y0
+					rel_coord = [pt[0] - pt[1] for pt in zip(coord, prev_coord)]
+					if allEqual(rel_coord):
+						rel_coord = rel_coord[0]
+					rel_coords.append(rel_coord)
+					if is_x:
+						x0 = coord
+					else:
+						y0 = coord
+					is_x = not is_x
+				cmd[1] = rel_coords
 		return commands
 
 	def getCharString(
